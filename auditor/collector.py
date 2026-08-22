@@ -1,13 +1,14 @@
-import boto3
 from dataclasses import dataclass, field
-from typing import List, Dict, Set
+
+import boto3
+
 from .base import AuditConfig
 
 
 @dataclass
 class ClusterData:
-    security_groups: List[Dict] = field(default_factory=list)
-    used_sg_ids: Set[str] = field(default_factory=set)
+    security_groups: list[dict] = field(default_factory=list)
+    used_sg_ids: set[str] = field(default_factory=set)
 
 
 def collect(config: AuditConfig) -> ClusterData:
