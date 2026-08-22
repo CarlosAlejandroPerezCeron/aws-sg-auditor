@@ -1,9 +1,9 @@
-from typing import List
-from .base import SgFinding, AuditConfig
+
+from .base import AuditConfig, SgFinding
 from .collector import ClusterData
 
 
-def check_unrestricted_ingress(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
+def check_unrestricted_ingress(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
     findings = []
     for sg in data.security_groups:
         for rule in sg.get("IpPermissions", []):
@@ -36,7 +36,7 @@ def check_unrestricted_ingress(data: ClusterData, config: AuditConfig) -> List[S
     return findings
 
 
-def check_unused_sg(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
+def check_unused_sg(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
     findings = []
     for sg in data.security_groups:
         if sg["GroupName"] == "default":
@@ -55,7 +55,7 @@ def check_unused_sg(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
     return findings
 
 
-def check_default_sg_modified(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
+def check_default_sg_modified(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
     findings = []
     for sg in data.security_groups:
         if sg["GroupName"] != "default":
@@ -75,7 +75,7 @@ def check_default_sg_modified(data: ClusterData, config: AuditConfig) -> List[Sg
     return findings
 
 
-def check_unrestricted_egress(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
+def check_unrestricted_egress(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
     findings = []
     for sg in data.security_groups:
         for rule in sg.get("IpPermissionsEgress", []):
@@ -90,21 +90,25 @@ def check_unrestricted_egress(data: ClusterData, config: AuditConfig) -> List[Sg
                             sg_name=sg["GroupName"],
                             vpc_id=sg.get("VpcId", ""),
                             title="Unrestricted egress to 0.0.0.0/0",
-                            detail="All outbound traffic is allowed — increases exfiltration risk",
+                            detail="All outbound traffic is allowed - increases exfiltration risk",
                             remediation="Restrict egress to required destinations and ports",
                         ))
     return findings
 
 
-def check_ssh_rdp_open(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
+def check_ssh_rdp_open(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
     findings = []
     sensitive_ports = {22: "SSH", 3389: "RDP"}
     for sg in data.security_groups:
         for rule in sg.get("IpPermissions", []):
+            protocol = rule.get("IpProtocol", "")
             from_port = rule.get("FromPort", -1)
             to_port = rule.get("ToPort", -1)
+            # protocol -1 = all traffic (no FromPort/ToPort) — treat as all ports open
+            all_ports = protocol == "-1"
             for port, service in sensitive_ports.items():
-                if from_port <= port <= to_port:
+                port_exposed = all_ports or (from_port != -1 and from_port <= port <= to_port)
+                if port_exposed:
                     for cidr in rule.get("IpRanges", []):
                         if cidr.get("CidrIp") == "0.0.0.0/0":
                             findings.append(SgFinding(
@@ -120,8 +124,8 @@ def check_ssh_rdp_open(data: ClusterData, config: AuditConfig) -> List[SgFinding
     return findings
 
 
-def run_all(data: ClusterData, config: AuditConfig) -> List[SgFinding]:
-    findings: List[SgFinding] = []
+def run_all(data: ClusterData, config: AuditConfig) -> list[SgFinding]:
+    findings: list[SgFinding] = []
     for fn in [
         check_unrestricted_ingress,
         check_unused_sg,
