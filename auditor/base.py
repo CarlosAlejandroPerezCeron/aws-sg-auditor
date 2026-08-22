@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Optional
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
@@ -18,7 +17,7 @@ class SgFinding:
 
 @dataclass
 class AuditConfig:
-    profile: Optional[str] = None
+    profile: str | None = None
     region: str = "us-east-1"
     min_severity: str = "LOW"
-    vpc_id: Optional[str] = None
+    vpc_id: str | None = None
