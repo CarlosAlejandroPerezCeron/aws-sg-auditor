@@ -1,9 +1,10 @@
 import argparse
 import sys
-from auditor.base import AuditConfig, SEVERITY_ORDER
+
+from auditor.base import SEVERITY_ORDER, AuditConfig
 from auditor.collector import collect
 from auditor.rules import run_all
-from report import print_terminal, print_json, write_csv
+from report import print_json, print_terminal, write_csv
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,9 +40,8 @@ def main() -> None:
     if args.csv_path:
         write_csv(findings, args.csv_path)
 
-    if args.fail_on_critical:
-        if any(f.severity == "CRITICAL" for f in findings):
-            sys.exit(1)
+    if args.fail_on_critical and any(f.severity == "CRITICAL" for f in findings):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
