@@ -1,17 +1,17 @@
 import csv
 import json
-from typing import List
-from auditor.base import SgFinding, SEVERITY_ORDER
+
+from auditor.base import SgFinding
 
 try:
-    from rich.table import Table
     from rich.console import Console
+    from rich.table import Table
     RICH = True
 except ImportError:
     RICH = False
 
 
-def print_terminal(findings: List[SgFinding]) -> None:
+def print_terminal(findings: list[SgFinding]) -> None:
     if not findings:
         print("No findings.")
         return
@@ -34,12 +34,12 @@ def print_terminal(findings: List[SgFinding]) -> None:
             print(f"{f.severity} [{f.rule_id}] {f.sg_id} ({f.sg_name}) - {f.title}")
 
 
-def print_json(findings: List[SgFinding]) -> None:
+def print_json(findings: list[SgFinding]) -> None:
     import dataclasses
     print(json.dumps([dataclasses.asdict(f) for f in findings], indent=2))
 
 
-def write_csv(findings: List[SgFinding], path: str) -> None:
+def write_csv(findings: list[SgFinding], path: str) -> None:
     import dataclasses
     if not findings:
         return
