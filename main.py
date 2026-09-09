@@ -1,36 +1,42 @@
+from __future__ import annotations
+
 import argparse
 import sys
 
-from auditor.base import SEVERITY_ORDER, AuditConfig
+from auditor.base import AuditConfig
 from auditor.collector import collect
 from auditor.rules import run_all
 from report import print_json, print_terminal, write_csv
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="AWS Security Group Auditor")
-    p.add_argument("--profile", help="AWS profile name")
-    p.add_argument("--region", default="us-east-1")
-    p.add_argument("--vpc-id", help="Limit scan to a specific VPC")
-    p.add_argument("--min-severity", default="LOW", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW"])
-    p.add_argument("--output", default="terminal", choices=["terminal", "json"])
-    p.add_argument("--csv-path", help="Write findings to CSV")
-    p.add_argument("--fail-on-critical", action="store_true", help="Exit 1 if CRITICAL findings exist")
-    return p.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="aws-sg-auditor",
+        description="Audit AWS Security Groups for dangerous inbound rules.",
+    )
+    p.add_argument("--profile", help="AWS CLI profile name")
+    p.add_argument("--region", default="us-east-1", help="AWS region (default: us-east-1)")
+    p.add_argument("--groups", nargs="+", metavar="SG_ID",
+                   help="Specific security group IDs to audit (default: all)")
+    p.add_argument("--min-severity", choices=["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                   default="LOW", help="Minimum severity to report (default: LOW)")
+    p.add_argument("--output", choices=["terminal", "json"], default="terminal")
+    p.add_argument("--csv-path", metavar="PATH", help="Also write CSV report to PATH")
+    p.add_argument("--fail-on-critical", action="store_true",
+                   help="Exit with code 2 if any CRITICAL finding is detected")
+    return p
 
 
 def main() -> None:
-    args = parse_args()
+    args = build_parser().parse_args()
     config = AuditConfig(
         profile=args.profile,
         region=args.region,
-        vpc_id=args.vpc_id,
+        groups=args.groups or [],
         min_severity=args.min_severity,
     )
-    data = collect(config)
-    findings = run_all(data, config)
-    threshold = SEVERITY_ORDER.get(args.min_severity, 3)
-    findings = [f for f in findings if SEVERITY_ORDER.get(f.severity, 4) <= threshold]
+    groups = collect(config)
+    findings = run_all(groups, config)
 
     if args.output == "json":
         print_json(findings)
@@ -41,7 +47,7 @@ def main() -> None:
         write_csv(findings, args.csv_path)
 
     if args.fail_on_critical and any(f.severity == "CRITICAL" for f in findings):
-        sys.exit(1)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
