@@ -1,34 +1,42 @@
-from dataclasses import dataclass, field
+from __future__ import annotations
 
 import boto3
+from botocore.exceptions import ClientError
 
-from .base import AuditConfig
-
-
-@dataclass
-class ClusterData:
-    security_groups: list[dict] = field(default_factory=list)
-    used_sg_ids: set[str] = field(default_factory=set)
+from .base import AuditConfig, SecurityGroup, SgRule
 
 
-def collect(config: AuditConfig) -> ClusterData:
+def _parse_rules(permissions: list[dict]) -> list[SgRule]:
+    rules = []
+    for perm in permissions:
+        proto = perm.get("IpProtocol", "-1")
+        from_port = perm.get("FromPort", 0)
+        to_port = perm.get("ToPort", 65535)
+        cidrs = [r["CidrIp"] for r in perm.get("IpRanges", [])]
+        ipv6 = [r["CidrIpv6"] for r in perm.get("Ipv6Ranges", [])]
+        rules.append(SgRule(protocol=proto, from_port=from_port, to_port=to_port,
+                            cidrs=cidrs, ipv6_cidrs=ipv6))
+    return rules
+
+
+def collect(config: AuditConfig) -> list[SecurityGroup]:
     session = boto3.Session(profile_name=config.profile, region_name=config.region)
     ec2 = session.client("ec2")
-    data = ClusterData()
+    try:
+        kwargs: dict = {}
+        if config.groups:
+            kwargs["GroupIds"] = config.groups
+        resp = ec2.describe_security_groups(**kwargs)
+    except ClientError:
+        return []
 
-    # Fetch security groups
-    filters = []
-    if config.vpc_id:
-        filters.append({"Name": "vpc-id", "Values": [config.vpc_id]})
-    paginator = ec2.get_paginator("describe_security_groups")
-    for page in paginator.paginate(Filters=filters):
-        data.security_groups.extend(page["SecurityGroups"])
-
-    # Collect SG IDs referenced by network interfaces (used SGs)
-    ni_paginator = ec2.get_paginator("describe_network_interfaces")
-    for page in ni_paginator.paginate():
-        for ni in page["NetworkInterfaces"]:
-            for sg in ni.get("Groups", []):
-                data.used_sg_ids.add(sg["GroupId"])
-
-    return data
+    result = []
+    for sg in resp.get("SecurityGroups", []):
+        result.append(SecurityGroup(
+            sg_id=sg["GroupId"],
+            sg_name=sg.get("GroupName", ""),
+            is_default=sg.get("GroupName", "") == "default",
+            inbound=_parse_rules(sg.get("IpPermissions", [])),
+            outbound=_parse_rules(sg.get("IpPermissionsEgress", [])),
+        ))
+    return result
