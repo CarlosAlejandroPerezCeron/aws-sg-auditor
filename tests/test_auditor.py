@@ -1,142 +1,169 @@
-from auditor.base import AuditConfig
-from auditor.collector import ClusterData
+from auditor.base import AuditConfig, SecurityGroup, SgRule
 from auditor.rules import (
-    check_default_sg_modified,
-    check_ssh_rdp_open,
-    check_unrestricted_egress,
-    check_unrestricted_ingress,
-    check_unused_sg,
+    check_all_traffic_open,
+    check_any_port_open,
+    check_default_sg_rules,
+    check_rdp_open,
+    check_ssh_open,
     run_all,
 )
 
 CFG = AuditConfig()
 
 
-def _sg(gid, gname, vpc="vpc-0001", ingress=None, egress=None):
-    return {
-        "GroupId": gid,
-        "GroupName": gname,
-        "VpcId": vpc,
-        "IpPermissions": ingress or [],
-        "IpPermissionsEgress": egress or [],
-    }
+def _sg(sg_id="sg-123", name="my-sg", is_default=False, inbound=None, outbound=None):
+    return SecurityGroup(
+        sg_id=sg_id,
+        sg_name=name,
+        is_default=is_default,
+        inbound=inbound or [],
+        outbound=outbound or [],
+    )
 
 
-def _rule(from_port, to_port, cidr="0.0.0.0/0", protocol="tcp"):
-    return {"FromPort": from_port, "ToPort": to_port, "IpProtocol": protocol,
-            "IpRanges": [{"CidrIp": cidr}], "Ipv6Ranges": [], "UserIdGroupPairs": []}
+def _rule(proto="tcp", from_port=0, to_port=65535, cidrs=None, ipv6=None):
+    return SgRule(
+        protocol=proto,
+        from_port=from_port,
+        to_port=to_port,
+        cidrs=cidrs or [],
+        ipv6_cidrs=ipv6 or [],
+    )
 
 
-def _all_traffic_rule(cidr="0.0.0.0/0"):
-    """Protocol -1 = all traffic; no FromPort/ToPort."""
-    return {"IpProtocol": "-1", "IpRanges": [{"CidrIp": cidr}], "Ipv6Ranges": [], "UserIdGroupPairs": []}
+# --- SG-001 SSH ---
+
+def test_ssh_open_to_world_flagged():
+    sg = _sg(inbound=[_rule("tcp", 22, 22, cidrs=["0.0.0.0/0"])])
+    findings = check_ssh_open(sg, CFG)
+    assert any(f.rule_id == "SG-001" and f.severity == "CRITICAL" for f in findings)
 
 
-# --- SG-001 unrestricted ingress ---
-
-def test_open_ingress_detected():
-    sg = _sg("sg-001", "open", ingress=[_rule(0, 65535)])
-    data = ClusterData(security_groups=[sg], used_sg_ids={"sg-001"})
-    findings = check_unrestricted_ingress(data, CFG)
-    assert any(f.rule_id == "SG-001" and f.sg_id == "sg-001" for f in findings)
+def test_ssh_open_ipv6_flagged():
+    sg = _sg(inbound=[_rule("tcp", 22, 22, ipv6=["::/0"])])
+    findings = check_ssh_open(sg, CFG)
+    assert any(f.rule_id == "SG-001" for f in findings)
 
 
-def test_restricted_ingress_clean():
-    sg = _sg("sg-002", "restricted", ingress=[_rule(443, 443, "10.0.0.0/8")])
-    data = ClusterData(security_groups=[sg], used_sg_ids={"sg-002"})
-    findings = check_unrestricted_ingress(data, CFG)
-    assert not findings
+def test_ssh_restricted_ip_clean():
+    sg = _sg(inbound=[_rule("tcp", 22, 22, cidrs=["10.0.0.0/8"])])
+    assert check_ssh_open(sg, CFG) == []
 
 
-# --- SG-002 unused ---
+def test_ssh_all_traffic_protocol_flagged():
+    sg = _sg(inbound=[_rule("-1", 0, 65535, cidrs=["0.0.0.0/0"])])
+    findings = check_ssh_open(sg, CFG)
+    assert any(f.rule_id == "SG-001" for f in findings)
 
-def test_unused_sg_detected():
-    sg = _sg("sg-003", "orphan")
-    data = ClusterData(security_groups=[sg], used_sg_ids=set())
-    findings = check_unused_sg(data, CFG)
+
+# --- SG-002 RDP ---
+
+def test_rdp_open_to_world_flagged():
+    sg = _sg(inbound=[_rule("tcp", 3389, 3389, cidrs=["0.0.0.0/0"])])
+    findings = check_rdp_open(sg, CFG)
+    assert any(f.rule_id == "SG-002" and f.severity == "CRITICAL" for f in findings)
+
+
+def test_rdp_open_ipv6_flagged():
+    sg = _sg(inbound=[_rule("tcp", 3389, 3389, ipv6=["::/0"])])
+    findings = check_rdp_open(sg, CFG)
     assert any(f.rule_id == "SG-002" for f in findings)
 
 
-def test_used_sg_clean():
-    sg = _sg("sg-004", "attached")
-    data = ClusterData(security_groups=[sg], used_sg_ids={"sg-004"})
-    findings = check_unused_sg(data, CFG)
-    assert not findings
+def test_rdp_restricted_clean():
+    sg = _sg(inbound=[_rule("tcp", 3389, 3389, cidrs=["192.168.1.0/24"])])
+    assert check_rdp_open(sg, CFG) == []
 
 
-def test_default_sg_excluded_from_unused():
-    sg = _sg("sg-005", "default")
-    data = ClusterData(security_groups=[sg], used_sg_ids=set())
-    findings = check_unused_sg(data, CFG)
-    assert not findings
+# --- SG-003 All Traffic ---
+
+def test_all_traffic_minus1_flagged():
+    sg = _sg(inbound=[_rule("-1", 0, 65535, cidrs=["0.0.0.0/0"])])
+    findings = check_all_traffic_open(sg, CFG)
+    assert any(f.rule_id == "SG-003" and f.severity == "HIGH" for f in findings)
 
 
-# --- SG-003 default sg with rules ---
-
-def test_default_sg_with_rules_detected():
-    sg = _sg("sg-006", "default", ingress=[_rule(22, 22)])
-    data = ClusterData(security_groups=[sg])
-    findings = check_default_sg_modified(data, CFG)
+def test_full_port_range_tcp_flagged():
+    sg = _sg(inbound=[_rule("tcp", 0, 65535, cidrs=["0.0.0.0/0"])])
+    findings = check_all_traffic_open(sg, CFG)
     assert any(f.rule_id == "SG-003" for f in findings)
 
 
-def test_default_sg_no_rules_clean():
-    sg = _sg("sg-007", "default")
-    data = ClusterData(security_groups=[sg])
-    findings = check_default_sg_modified(data, CFG)
-    assert not findings
+def test_specific_port_not_all_traffic():
+    sg = _sg(inbound=[_rule("tcp", 443, 443, cidrs=["0.0.0.0/0"])])
+    assert check_all_traffic_open(sg, CFG) == []
 
 
-# --- SG-004 unrestricted egress ---
+def test_all_traffic_restricted_cidr_clean():
+    sg = _sg(inbound=[_rule("-1", 0, 65535, cidrs=["10.0.0.0/8"])])
+    assert check_all_traffic_open(sg, CFG) == []
 
-def test_unrestricted_egress_detected():
-    egress_rule = {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}], "Ipv6Ranges": []}
-    sg = _sg("sg-009", "egress-open", egress=[egress_rule])
-    data = ClusterData(security_groups=[sg])
-    findings = check_unrestricted_egress(data, CFG)
+
+# --- SG-004 Any Port Open ---
+
+def test_http_open_flagged():
+    sg = _sg(inbound=[_rule("tcp", 80, 80, cidrs=["0.0.0.0/0"])])
+    findings = check_any_port_open(sg, CFG)
     assert any(f.rule_id == "SG-004" for f in findings)
 
 
-def test_restricted_egress_clean():
-    egress_rule = {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
-                   "IpRanges": [{"CidrIp": "0.0.0.0/0"}], "Ipv6Ranges": []}
-    sg = _sg("sg-013", "egress-restricted", egress=[egress_rule])
-    data = ClusterData(security_groups=[sg])
-    findings = check_unrestricted_egress(data, CFG)
-    assert not findings
+def test_https_open_flagged():
+    sg = _sg(inbound=[_rule("tcp", 443, 443, cidrs=["0.0.0.0/0"])])
+    findings = check_any_port_open(sg, CFG)
+    assert any(f.rule_id == "SG-004" for f in findings)
 
 
-# --- SG-005 ssh/rdp ---
-
-def test_ssh_open_detected():
-    sg = _sg("sg-008", "jump", ingress=[_rule(22, 22)])
-    data = ClusterData(security_groups=[sg])
-    findings = check_ssh_rdp_open(data, CFG)
-    assert any(f.rule_id == "SG-005" and "SSH" in f.title for f in findings)
+def test_private_cidr_not_flagged():
+    sg = _sg(inbound=[_rule("tcp", 443, 443, cidrs=["10.0.0.0/8"])])
+    assert check_any_port_open(sg, CFG) == []
 
 
-def test_all_traffic_catches_ssh():
-    """Protocol -1 (all traffic open) should trigger SG-005 for SSH."""
-    sg = _sg("sg-014", "all-open", ingress=[_all_traffic_rule()])
-    data = ClusterData(security_groups=[sg])
-    findings = check_ssh_rdp_open(data, CFG)
-    assert any(f.rule_id == "SG-005" for f in findings)
+# --- SG-005 Default SG ---
+
+def test_default_sg_with_rules_flagged():
+    sg = _sg(name="default", is_default=True,
+             inbound=[_rule("tcp", 443, 443, cidrs=["0.0.0.0/0"])],
+             outbound=[_rule("-1", 0, 65535, cidrs=["0.0.0.0/0"])])
+    findings = check_default_sg_rules(sg, CFG)
+    assert any(f.rule_id == "SG-005" and f.severity == "MEDIUM" for f in findings)
+
+
+def test_default_sg_no_rules_clean():
+    sg = _sg(name="default", is_default=True)
+    assert check_default_sg_rules(sg, CFG) == []
+
+
+def test_non_default_sg_with_rules_not_flagged():
+    sg = _sg(name="web-sg", is_default=False,
+             inbound=[_rule("tcp", 443, 443, cidrs=["0.0.0.0/0"])])
+    assert check_default_sg_rules(sg, CFG) == []
 
 
 # --- run_all ---
 
-def test_run_all_returns_sorted():
-    sg_open = _sg("sg-010", "open", ingress=[_rule(0, 65535)])
-    sg_ssh = _sg("sg-011", "ssh", ingress=[_rule(22, 22)])
-    data = ClusterData(security_groups=[sg_open, sg_ssh], used_sg_ids={"sg-010", "sg-011"})
-    findings = run_all(data, CFG)
-    severities = [f.severity for f in findings]
-    order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-    assert severities == sorted(severities, key=lambda s: order.get(s, 4))
+def test_run_all_clean_sg():
+    sg = _sg()
+    assert run_all([sg], CFG) == []
 
 
-def test_finding_fields_populated():
-    sg = _sg("sg-012", "test", ingress=[_rule(22, 22)])
-    data = ClusterData(security_groups=[sg], used_sg_ids={"sg-012"})
-    f = check_ssh_rdp_open(data, CFG)[0]
-    assert f.rule_id and f.severity and f.sg_id and f.sg_name and f.title and f.detail and f.remediation
+def test_run_all_severity_order():
+    sg = _sg(inbound=[
+        _rule("tcp", 22, 22, cidrs=["0.0.0.0/0"]),
+        _rule("tcp", 443, 443, cidrs=["0.0.0.0/0"]),
+    ])
+    findings = run_all([sg], CFG)
+    from auditor.base import SEVERITY_ORDER
+    sevs = [f.severity for f in findings]
+    assert sevs == sorted(sevs, key=lambda s: SEVERITY_ORDER.get(s, 99))
+
+
+def test_run_all_empty():
+    assert run_all([], CFG) == []
+
+
+def test_multiple_sgs_findings_per_sg():
+    sg1 = _sg("sg-a", inbound=[_rule("tcp", 22, 22, cidrs=["0.0.0.0/0"])])
+    sg2 = _sg("sg-b", inbound=[_rule("tcp", 3389, 3389, cidrs=["0.0.0.0/0"])])
+    findings = run_all([sg1, sg2], CFG)
+    sg_ids = {f.sg_id for f in findings}
+    assert "sg-a" in sg_ids and "sg-b" in sg_ids
